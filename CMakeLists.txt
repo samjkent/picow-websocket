@@ -24,7 +24,6 @@ pico_sdk_init()
 # Add your source files
 add_executable(${NAME}
     main.cpp
-    http_client.c
 )
 
 include(drivers/st7789/st7789)

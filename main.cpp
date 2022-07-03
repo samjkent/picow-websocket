@@ -20,18 +20,16 @@
 
 #define DEBUG_printf printf
 #define POLL_TIME_S 5
-#define BUF_SIZE 1024
+#define BUF_SIZE 2048
 
 typedef struct TCP_CLIENT_T_ {
     struct tcp_pcb *tcp_pcb;
     ip_addr_t remote_addr;
     uint8_t buffer[BUF_SIZE];
+    uint8_t rx_buffer[BUF_SIZE];
     int buffer_len;
-    uint8_t payload[BUF_SIZE];
-    int payload_len;
+    int rx_buffer_len;
     int sent_len;
-    bool complete;
-    int run_count;
     bool connected;
 } TCP_CLIENT_T;
 
@@ -47,7 +45,7 @@ Button button_b(PicoDisplay2::B);
 Button button_x(PicoDisplay2::X);
 Button button_y(PicoDisplay2::Y);
   
-char text[100] = "Disconnected";
+char text[BUF_SIZE] = "Disconnected";
 
 // HSV Conversion expects float inputs in the range of 0.00-1.00 for each channel
 // Outputs are rgb in the range 0-255 for each channel
@@ -93,7 +91,29 @@ static err_t tcp_client_poll(void *arg, struct tcp_pcb *tpcb) {
 static void tcp_client_err(void *arg, err_t err) {
     if (err != ERR_ABRT) {
         DEBUG_printf("tcp_client_err %d\n", err);
+    } else {
+        DEBUG_printf("tcp_client_err abort %d\n", err);
     }
+}
+
+static err_t tcp_client_close(void *arg) {
+    TCP_CLIENT_T *state = (TCP_CLIENT_T*)arg;
+    err_t err = ERR_OK;
+    if (state->tcp_pcb != NULL) {
+        tcp_arg(state->tcp_pcb, NULL);
+        tcp_poll(state->tcp_pcb, NULL, 0);
+        tcp_sent(state->tcp_pcb, NULL);
+        tcp_recv(state->tcp_pcb, NULL);
+        tcp_err(state->tcp_pcb, NULL);
+        err = tcp_close(state->tcp_pcb);
+        if (err != ERR_OK) {
+            DEBUG_printf("close failed %d, calling abort\n", err);
+            tcp_abort(state->tcp_pcb);
+            err = ERR_ABRT;
+        }
+        state->tcp_pcb = NULL;
+    }
+    return err;
 }
 
 err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err) {
@@ -106,12 +126,23 @@ err_t tcp_client_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err
     // can use this method to cause an assertion in debug mode, if this method is called when
     // cyw43_arch_lwip_begin IS needed
     cyw43_arch_lwip_check();
-    state->payload_len = 0;
+    state->rx_buffer_len = 0;
+
+    if(p == NULL) {
+        // Close
+        printf("received close \r\n");
+        tcp_client_close(arg);
+        return ERR_OK;
+    }
+
     if (p->tot_len > 0) {
         for (struct pbuf *q = p; q != NULL; q = q->next) {
-            memcpy((char *)state->payload + state->payload_len, (char*)q->payload, q->len);
-            state->payload_len += q->len;
+            if((state->rx_buffer_len + q->len) < BUF_SIZE) {
+                memcpy(state->rx_buffer + state->rx_buffer_len, q->payload, q->len);
+                state->rx_buffer_len += q->len;
+            }
         }
+        printf("tcp_recved \r\n");
         tcp_recved(tpcb, p->tot_len);
     }
     pbuf_free(p);
@@ -196,9 +227,11 @@ int main() {
   err_t err = tcp_connect(state->tcp_pcb, &state->remote_addr, TCP_PORT, tcp_client_connected);
   cyw43_arch_lwip_end();
 
+  uint32_t sw_timer;
+
   while(true) {
 
-    sprintf(text, "%.*s", state->payload_len, (char*)state->payload);
+    sprintf(text, "%.*s", state->rx_buffer_len, (char*)state->rx_buffer);
 
     if(button_a.raw()) text_location.x -= 1;
     if(button_b.raw()) text_location.x += 1;
@@ -248,19 +281,17 @@ int main() {
     // update screen
     st7789.update(&graphics);
 
-    // write to tcp
-    state->buffer_len = 1;
-    err_t err = tcp_write(state->tcp_pcb, state->buffer, state->buffer_len, TCP_WRITE_FLAG_COPY);
-    if (err != ERR_OK) {
-        DEBUG_printf("Failed to write data %d\n", err);
+    if((to_ms_since_boot(get_absolute_time()) - sw_timer) > 10000)
+    {
+        printf("timer \r\n");
+        // write to tcp
+        state->buffer_len = sprintf((char*)state->buffer, "GET / HTTP/1.1\r\nHost: REMOVED:8082\r\nConnection: keep-alive\r\n\r\n");
+        err_t err = tcp_write(state->tcp_pcb, state->buffer, state->buffer_len, TCP_WRITE_FLAG_COPY);
+        if (err != ERR_OK) {
+            DEBUG_printf("Failed to write data %d\n", err);
+        }
+        sw_timer = to_ms_since_boot(get_absolute_time());
     }
-
-    #if PICO_CYW43_ARCH_POLL
-        // if you are using pico_cyw43_arch_poll, then you must poll periodically from your
-        // main loop (not from a timer) to check for WiFi driver or lwIP work that needs to be done.
-        cyw43_arch_poll();
-        sleep_ms(1);
-    #endif
 
   }
 

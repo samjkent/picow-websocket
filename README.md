@@ -28,6 +28,10 @@ static err_t tcp_client_connected(void *arg, struct tcp_pcb *tpcb, err_t err) {
 }
 
 ```
+
+The HTTP GET requesting the connection upgrade:
+
+```
 GET / HTTP/1.1
 Host: REMOVED:8082
 Upgrade: websocket
@@ -38,6 +42,19 @@ Sec-WebSocket-Version: 13
 
 ```
 Note: newlines are important and must be sent as `\r\n` (including the empty terminating line)
+
+The client should check that the server has responded confirming that the upgrade has been successful with a reply along the lines of:
+
+```
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: x73hihjdisjd==
+Sec-WebSocket-Protocol: test
+
+```
+
+However this is not implemented here.
 
 ### Websocket Communication
 
